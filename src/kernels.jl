@@ -111,8 +111,8 @@ function scale_back_linearization_points_kernel(input_storage, eval_points, curr
 end
 
 # For the objective function relaxations, store the sum of the subgradient elements squared
-function sum_subgradients(subgradient_checksum, lvbs, uvbs, result_storage, n_points, points_per_LP, n_vars)
-    CUDA.@sync @cuda blocks=GPU_blocks threads=1024 sum_subgradients_kernel(subgradient_checksum, lvbs, uvbs, result_storage, n_points, points_per_LP, n_vars)
+function sum_subgradients(subgradient_checksum, lvbs, uvbs, result_storage, n_points, points_per_LP, n_vars, n_blocks)
+    CUDA.@sync @cuda blocks=n_blocks threads=1024 sum_subgradients_kernel(subgradient_checksum, lvbs, uvbs, result_storage, n_points, points_per_LP, n_vars)
     return nothing
 end
 function sum_subgradients_kernel(subgradient_checksum, lvbs, uvbs, result_storage, n_points, points_per_LP, n_vars)
@@ -133,8 +133,8 @@ end
 
 # Given a results matrix, extract information summarizing the signs of
 # subgradient elements.
-function extract_subgradient_sign(subgradient_checksum, result_storage, n_points, n_vars; concave::Bool=false)
-    CUDA.@sync @cuda blocks=GPU_blocks threads=1024 extract_subgradient_sign_kernel(subgradient_checksum, result_storage, n_points, n_vars, concave)
+function extract_subgradient_sign(subgradient_checksum, result_storage, n_points, n_vars, n_blocks; concave::Bool=false)
+    CUDA.@sync @cuda blocks=n_blocks threads=1024 extract_subgradient_sign_kernel(subgradient_checksum, result_storage, n_points, n_vars, concave)
     return nothing
 end
 function extract_subgradient_sign_kernel(subgradient_checksum, result_storage, n_points, n_vars, concave::Bool)
@@ -157,8 +157,8 @@ function extract_subgradient_sign_kernel(subgradient_checksum, result_storage, n
 end
 
 # For constraints, use the convex or concave relaxation values for comparisons
-function extract_convex_relaxation(comparison_vector, result_storage, n_points)
-    CUDA.@sync @cuda blocks=GPU_blocks threads=1024 extract_convex_relaxation_kernel(comparison_vector, result_storage, n_points)
+function extract_convex_relaxation(comparison_vector, result_storage, n_points, n_blocks)
+    CUDA.@sync @cuda blocks=n_blocks threads=1024 extract_convex_relaxation_kernel(comparison_vector, result_storage, n_points)
     return nothing
 end
 function extract_convex_relaxation_kernel(comparison_vector, result_storage, n_points)
@@ -170,8 +170,8 @@ function extract_convex_relaxation_kernel(comparison_vector, result_storage, n_p
     end
     return nothing
 end
-function extract_concave_relaxation(comparison_vector, result_storage, n_points)
-    CUDA.@sync @cuda blocks=GPU_blocks threads=1024 extract_concave_relaxation_kernel(comparison_vector, result_storage, n_points)
+function extract_concave_relaxation(comparison_vector, result_storage, n_points, n_blocks)
+    CUDA.@sync @cuda blocks=n_blocks threads=1024 extract_concave_relaxation_kernel(comparison_vector, result_storage, n_points)
     return nothing
 end
 function extract_concave_relaxation_kernel(comparison_vector, result_storage, n_points)

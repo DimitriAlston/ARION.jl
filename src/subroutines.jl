@@ -149,8 +149,8 @@ function solve_gpu!(ext::T, m::EAGO.GlobalOptimizer) where T <: PDLP_Method
                 this_time = @elapsed if m._preprocess_feasibility
                     count += 1
                     ext.node_storage[count] = m._current_node
-                    ext.all_lvbs[count,:] .= @view ext.node_storage[count].lower_variable_bounds[1:end-_epigraph_occurred]
-                    ext.all_uvbs[count,:] .= @view ext.node_storage[count].upper_variable_bounds[1:end-_epigraph_occurred]
+                    ext.all_lvbs[count,:] .= @view ext.node_storage[count].lower_variable_bounds[1:end-m._epigraph_occurred]
+                    ext.all_uvbs[count,:] .= @view ext.node_storage[count].upper_variable_bounds[1:end-m._epigraph_occurred]
                     if count == ext.max_parallel_nodes
                         break
                     end
@@ -264,6 +264,76 @@ function solve_gpu!(ext::T, m::EAGO.GlobalOptimizer) where T <: PDLP_Method
     GC.gc()
 end
 solve_gpu!(m::EAGO.GlobalOptimizer) = solve_gpu!(EAGO._ext(m), m)
+
+function print_gpu_iteration!(m::EAGO.GlobalOptimizer, gpu_iteration_count::Int, end_flag::Bool)
+    if EAGO._verbosity(m) > 0
+
+        # Print an iteration summary on mod(gpu_iteration_count, 10)==1, OR if end_flag==true
+        # if mod(gpu_iteration_count, 10)==0 || end_flag
+        if true
+            # Print start
+            print_str = "| "
+
+            # Print iteration number (with a star next to it, to indicate a GPU iteration)
+            max_len = 11
+            temp_str = string(m._iteration_count) * "*"
+            len_str = length(temp_str)
+            print_str *= (" "^(max_len - len_str))*temp_str*" | "
+
+            # Print node count
+            max_len = 11
+            temp_str = string(m._node_count)
+            len_str = length(temp_str)
+            print_str *= (" "^(max_len - len_str))*temp_str*" | "
+
+            # Print lower bound
+            max_len = 11
+            temp_str = string(round(m._global_lower_bound, digits=3))
+            len_str = length(temp_str)
+            print_str *= (" "^(max_len - len_str))*temp_str*" | "
+
+            # Print upper bound
+            max_len = 11
+            temp_str = string(round(m._global_upper_bound, digits=3))
+            len_str = length(temp_str)
+            print_str *= (" "^(max_len - len_str))*temp_str*" | "
+
+            # Print absolute gap between lower and upper bound
+            max_len = 11
+            temp_str = string(round(abs(m._global_upper_bound - m._global_lower_bound), digits=3))
+            len_str = length(temp_str)
+            print_str *= (" "^(max_len - len_str))*temp_str*" | "
+
+            # Print relative gap between lower and upper bound
+            max_len = 11
+            temp_str = string(round(EAGO.relative_gap(m._global_lower_bound, m._global_upper_bound), digits=3))
+            len_str = length(temp_str)
+            print_str *= (" "^(max_len - len_str))*temp_str*" | "
+
+            # Print run time
+            max_len = 11
+            temp_str = string(round(m._run_time, digits=2))
+            len_str = length(temp_str)
+            print_str *= (" "^(max_len - len_str))*temp_str*" | "
+
+            # Print time remaining
+            max_len = 11
+            temp_str = string(round(m._time_left, digits=2))
+            len_str = length(temp_str)
+            print_str *= (" "^(max_len - len_str))*temp_str*" |"
+
+            println(print_str)
+
+            # Update printed iteration
+            m._last_printed_iteration = m._iteration_count
+        end
+        # if end_flag
+        #     println("-----------------------------------------------------------------------------------------------------------------")
+        # end
+    end
+
+    return
+end
 
 make_current_node!(m::EAGO.GlobalOptimizer{R,S,Q}) where {R,S,Q<:EAGO.ExtensionType} = make_current_node!(EAGO._ext(m), m)
 function make_current_node!(t::T, m::EAGO.GlobalOptimizer) where T <: PDLP_Method
@@ -418,10 +488,10 @@ function lower_problem_gpu!(t::PDLP_MultiSobol, m::EAGO.GlobalOptimizer)
     adding_constraints += @elapsed CUDA.@sync begin
         # Update the comparison vector with the sum of the squares of convex relaxation
         # subgradient values, scaled by domain size in each dimension
-        sum_subgradients(t.comparison_vector, t.lvbs_d, t.uvbs_d, t.result_storage, n_points, t.num_sobol_points, var_count)
+        sum_subgradients(t.comparison_vector, t.lvbs_d, t.uvbs_d, t.result_storage, n_points, t.num_sobol_points, var_count, t.n_blocks)
 
         # Get the unique indicator for subgradient signs to not add similar constraints later
-        extract_subgradient_sign(t.subgradient_checksum, t.result_storage, n_points, var_count)
+        extract_subgradient_sign(t.subgradient_checksum, t.result_storage, n_points, var_count, t.n_blocks)
 
         # Add an LP constraint based on the interval extension (equal for all linearization
         # points, currently. Could change in the future if subgradient propagation is used)
@@ -454,19 +524,19 @@ function lower_problem_gpu!(t::PDLP_MultiSobol, m::EAGO.GlobalOptimizer)
 
         adding_constraints += @elapsed CUDA.@sync begin
             # Update the comparison vector with the value of the CONVEX relaxations (for the LEQ side of the EQ constraint)
-            extract_convex_relaxation(t.comparison_vector, t.result_storage, n_points)
+            extract_convex_relaxation(t.comparison_vector, t.result_storage, n_points, t.n_blocks)
             
             # Get the unique indicator for subgradient signs to not add similar constraints later
-            extract_subgradient_sign(t.subgradient_checksum, t.result_storage, n_points, var_count)
+            extract_subgradient_sign(t.subgradient_checksum, t.result_storage, n_points, var_count, t.n_blocks)
 
             # Add the LEQ constraint(s)
             @views add_best_cons_LP_constraints(LPs, t.result_storage[1:n_points,:], t.eval_points[1:n_points,:], t.comparison_vector[1:n_points], t.subgradient_checksum[1:n_points], t.PDLP_data.dims, t.PDLP_data.active_constraint, t.num_sobol_points, sum(t.eq_sp[i])+1, geq=false)
 
             # Update the comparison vector with the value of the CONCAVE relaxations (for the GEQ side of the EQ constraint)
-            extract_concave_relaxation(t.comparison_vector, t.result_storage, n_points)
+            extract_concave_relaxation(t.comparison_vector, t.result_storage, n_points, t.n_blocks)
             
             # Get the unique indicator for subgradient signs to not add similar constraints later
-            extract_subgradient_sign(t.subgradient_checksum, t.result_storage, n_points, var_count, concave=true)
+            extract_subgradient_sign(t.subgradient_checksum, t.result_storage, n_points, var_count, t.n_blocks, concave=true)
 
             # Add the GEQ constraint(s)
             @views add_best_cons_LP_constraints(LPs, t.result_storage[1:n_points,:], t.eval_points[1:n_points,:], t.comparison_vector[1:n_points], t.subgradient_checksum[1:n_points], t.PDLP_data.dims, t.PDLP_data.active_constraint, t.num_sobol_points, sum(t.eq_sp[i])+1, geq=true)
@@ -477,8 +547,8 @@ function lower_problem_gpu!(t::PDLP_MultiSobol, m::EAGO.GlobalOptimizer)
     for i = 1:leq_len
         calculating_relaxations += @elapsed CUDA.@sync @views t.leq_cons[i](t.result_storage[1:n_points,:], [t.input_storage[j][1:n_points,:] for j=1:var_count]...)
         adding_constraints += @elapsed CUDA.@sync begin
-            extract_convex_relaxation(t.comparison_vector, t.result_storage, n_points)
-            extract_subgradient_sign(t.subgradient_checksum, t.result_storage, n_points, var_count)
+            extract_convex_relaxation(t.comparison_vector, t.result_storage, n_points, t.n_blocks)
+            extract_subgradient_sign(t.subgradient_checksum, t.result_storage, n_points, var_count, t.n_blocks)
             @views add_best_cons_LP_constraints(LPs, t.result_storage[1:n_points,:], t.eval_points[1:n_points,:], t.comparison_vector[1:n_points], t.subgradient_checksum[1:n_points], t.PDLP_data.dims, t.PDLP_data.active_constraint, t.num_sobol_points, sum(t.leq_sp[i])+1, geq=false)
         end
     end
@@ -487,8 +557,8 @@ function lower_problem_gpu!(t::PDLP_MultiSobol, m::EAGO.GlobalOptimizer)
     for i = 1:geq_len
         calculating_relaxations += @elapsed CUDA.@sync @views t.geq_cons[i](t.result_storage[1:n_points,:], [t.input_storage[j][1:n_points,:] for j=1:var_count]...)
         adding_constraints += @elapsed CUDA.@sync begin
-            extract_concave_relaxation(t.comparison_vector, t.result_storage, n_points)
-            extract_subgradient_sign(t.subgradient_checksum, t.result_storage, n_points, var_count, concave=true)
+            extract_concave_relaxation(t.comparison_vector, t.result_storage, n_points, t.n_blocks)
+            extract_subgradient_sign(t.subgradient_checksum, t.result_storage, n_points, var_count, t.n_blocks, concave=true)
             @views add_best_cons_LP_constraints(LPs, t.result_storage[1:n_points,:], t.eval_points[1:n_points,:], t.comparison_vector[1:n_points], t.subgradient_checksum[1:n_points], t.PDLP_data.dims, t.PDLP_data.active_constraint, t.num_sobol_points, sum(t.geq_sp[i])+1, geq=true)
         end
     end
@@ -1027,10 +1097,10 @@ function lower_problem_gpu!(t::PDLP_MultiSobol_MultiGPU, m::EAGO.GlobalOptimizer
 
                 # Update the comparison vector with the sum of the squares of convex relaxation
                 # subgradient values, scaled by domain size in each dimension
-                sum_subgradients(t.comparison_vector[gpu], t.lvbs_d[gpu], t.uvbs_d[gpu], t.result_storage[gpu], n_points[gpu], t.num_sobol_points, var_count)
+                sum_subgradients(t.comparison_vector[gpu], t.lvbs_d[gpu], t.uvbs_d[gpu], t.result_storage[gpu], n_points[gpu], t.num_sobol_points, var_count, t.n_blocks[gpu])
 
                 # Get the unique indicator for subgradient signs to not add similar constraints later
-                extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count)
+                extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, t.n_blocks[gpu])
 
                 # Add an LP constraint based on the interval extension (equal for all linearization
                 # points, currently. Could change in the future if subgradient propagation is used)
@@ -1044,8 +1114,8 @@ function lower_problem_gpu!(t::PDLP_MultiSobol_MultiGPU, m::EAGO.GlobalOptimizer
                 device!(1)
                 gpu = 2
 
-                sum_subgradients(t.comparison_vector[gpu], t.lvbs_d[gpu], t.uvbs_d[gpu], t.result_storage[gpu], n_points[gpu], t.num_sobol_points, var_count)
-                extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count)
+                sum_subgradients(t.comparison_vector[gpu], t.lvbs_d[gpu], t.uvbs_d[gpu], t.result_storage[gpu], n_points[gpu], t.num_sobol_points, var_count, t.n_blocks[gpu])
+                extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, t.n_blocks[gpu])
                 @views BatchPDLP.add_multiple_LP_lower_bound(t.PDLP_data[gpu].original_problem, t.result_storage[gpu][1:n_points[gpu],:], t.PDLP_data[gpu].dims, t.PDLP_data[gpu].active_constraint, t.num_sobol_points)
                 @views BatchPDLP.add_best_obj_LP_constraints(t.PDLP_data[gpu].original_problem, t.result_storage[gpu][1:n_points[gpu],:], t.eval_points[gpu][1:n_points[gpu],:], t.comparison_vector[gpu][1:n_points[gpu]], t.subgradient_checksum[gpu][1:n_points[gpu]], t.PDLP_data[gpu].dims, t.PDLP_data[gpu].active_constraint, t.num_sobol_points, sum(t.obj_sp)+1)
             end
@@ -1119,19 +1189,19 @@ function lower_problem_gpu!(t::PDLP_MultiSobol_MultiGPU, m::EAGO.GlobalOptimizer
                     gpu = 1
 
                     # Update the comparison vector with the value of the CONVEX relaxations (for the LEQ side of the EQ constraint)
-                    extract_convex_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu])
+                    extract_convex_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu], t.n_blocks[gpu])
                     
                     # Calculate something that depends on the sign of the subgradient terms
-                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count)
+                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, t.n_blocks[gpu])
 
                     # Add the LEQ constraints
                     @views add_best_cons_LP_constraints(t.PDLP_data[gpu].original_problem, t.result_storage[gpu][1:n_points[gpu],:], t.eval_points[gpu][1:n_points[gpu],:], t.comparison_vector[gpu][1:n_points[gpu]], t.subgradient_checksum[gpu][1:n_points[gpu]], t.PDLP_data[gpu].dims, t.PDLP_data[gpu].active_constraint, t.num_sobol_points, sum(t.eq_sp[i])+1, geq=false)
 
                     # Update the comparison vector with the value of the CONCAVE relaxations (for the GEQ side of the EQ constraint)
-                    extract_concave_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu])
+                    extract_concave_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu], t.n_blocks[gpu])
                     
                     # Calculate something that depends on the sign of the subgradient terms
-                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, concave=true)
+                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, t.n_blocks[gpu], concave=true)
 
                     # Add the GEQ constraints
                     @views add_best_cons_LP_constraints(t.PDLP_data[gpu].original_problem, t.result_storage[gpu][1:n_points[gpu],:], t.eval_points[gpu][1:n_points[gpu],:], t.comparison_vector[gpu][1:n_points[gpu]], t.subgradient_checksum[gpu][1:n_points[gpu]], t.PDLP_data[gpu].dims, t.PDLP_data[gpu].active_constraint, t.num_sobol_points, sum(t.eq_sp[i])+1, geq=true)
@@ -1140,11 +1210,11 @@ function lower_problem_gpu!(t::PDLP_MultiSobol_MultiGPU, m::EAGO.GlobalOptimizer
                     device!(1)
                     gpu = 2
 
-                    extract_convex_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu])
-                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count)
+                    extract_convex_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu], t.n_blocks[gpu])
+                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, t.n_blocks[gpu])
                     @views add_best_cons_LP_constraints(t.PDLP_data[gpu].original_problem, t.result_storage[gpu][1:n_points[gpu],:], t.eval_points[gpu][1:n_points[gpu],:], t.comparison_vector[gpu][1:n_points[gpu]], t.subgradient_checksum[gpu][1:n_points[gpu]], t.PDLP_data[gpu].dims, t.PDLP_data[gpu].active_constraint, t.num_sobol_points, sum(t.eq_sp[i])+1, geq=false)
-                    extract_concave_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu])
-                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, concave=true)
+                    extract_concave_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu], t.n_blocks[gpu])
+                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, t.n_blocks[gpu], concave=true)
                     @views add_best_cons_LP_constraints(t.PDLP_data[gpu].original_problem, t.result_storage[gpu][1:n_points[gpu],:], t.eval_points[gpu][1:n_points[gpu],:], t.comparison_vector[gpu][1:n_points[gpu]], t.subgradient_checksum[gpu][1:n_points[gpu]], t.PDLP_data[gpu].dims, t.PDLP_data[gpu].active_constraint, t.num_sobol_points, sum(t.eq_sp[i])+1, geq=true)
                 end
             end
@@ -1176,16 +1246,16 @@ function lower_problem_gpu!(t::PDLP_MultiSobol_MultiGPU, m::EAGO.GlobalOptimizer
                     device!(0)
                     gpu = 1
 
-                    extract_convex_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu])
-                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count) 
+                    extract_convex_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu], t.n_blocks[gpu])
+                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, t.n_blocks[gpu]) 
                     @views add_best_cons_LP_constraints(t.PDLP_data[gpu].original_problem, t.result_storage[gpu][1:n_points[gpu],:], t.eval_points[gpu][1:n_points[gpu],:], t.comparison_vector[gpu][1:n_points[gpu]], t.subgradient_checksum[gpu][1:n_points[gpu]], t.PDLP_data[gpu].dims, t.PDLP_data[gpu].active_constraint, t.num_sobol_points, sum(t.leq_sp[i])+1, geq=false)
                 end
                 @async begin
                     device!(1)
                     gpu = 2
 
-                    extract_convex_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu])
-                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count) 
+                    extract_convex_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu], t.n_blocks[gpu])
+                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, t.n_blocks[gpu]) 
                     @views add_best_cons_LP_constraints(t.PDLP_data[gpu].original_problem, t.result_storage[gpu][1:n_points[gpu],:], t.eval_points[gpu][1:n_points[gpu],:], t.comparison_vector[gpu][1:n_points[gpu]], t.subgradient_checksum[gpu][1:n_points[gpu]], t.PDLP_data[gpu].dims, t.PDLP_data[gpu].active_constraint, t.num_sobol_points, sum(t.leq_sp[i])+1, geq=false)
                 end
             end
@@ -1217,16 +1287,16 @@ function lower_problem_gpu!(t::PDLP_MultiSobol_MultiGPU, m::EAGO.GlobalOptimizer
                     device!(0)
                     gpu = 1
 
-                    extract_concave_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu])
-                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, concave=true)
+                    extract_concave_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu], t.n_blocks[gpu])
+                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, t.n_blocks[gpu], concave=true)
                     @views add_best_cons_LP_constraints(t.PDLP_data[gpu].original_problem, t.result_storage[gpu][1:n_points[gpu],:], t.eval_points[gpu][1:n_points[gpu],:], t.comparison_vector[gpu][1:n_points[gpu]], t.subgradient_checksum[gpu][1:n_points[gpu]], t.PDLP_data[gpu].dims, t.PDLP_data[gpu].active_constraint, t.num_sobol_points, sum(t.geq_sp[i])+1, geq=true)
                 end
                 @async begin
                     device!(1)
                     gpu = 2
 
-                    extract_concave_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu])
-                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, concave=true)
+                    extract_concave_relaxation(t.comparison_vector[gpu], t.result_storage[gpu], n_points[gpu], t.n_blocks[gpu])
+                    extract_subgradient_sign(t.subgradient_checksum[gpu], t.result_storage[gpu], n_points[gpu], var_count, t.n_blocks[gpu], concave=true)
                     @views add_best_cons_LP_constraints(t.PDLP_data[gpu].original_problem, t.result_storage[gpu][1:n_points[gpu],:], t.eval_points[gpu][1:n_points[gpu],:], t.comparison_vector[gpu][1:n_points[gpu]], t.subgradient_checksum[gpu][1:n_points[gpu]], t.PDLP_data[gpu].dims, t.PDLP_data[gpu].active_constraint, t.num_sobol_points, sum(t.geq_sp[i])+1, geq=true)
                 end
             end
@@ -1509,6 +1579,7 @@ function lower_problem_gpu!(t::PDLP_MultiSobol_MultiGPU, m::EAGO.GlobalOptimizer
     push!(t.timers[11], cpu_solve_time)
     return nothing
 end
+lower_problem_gpu!(m::EAGO.GlobalOptimizer) = lower_problem_gpu!(EAGO._ext(m), m)
 
 # Helper function to print an LP constraint matrix for diagnostic purposes. 
 # Use by calling, e.g.,:

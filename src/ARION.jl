@@ -7,10 +7,10 @@ module ARION
     import EAGO: optimize_hook!
 
     const MOI = MathOptInterface
-    
+
     include("./extension.jl")
     include("./kernels.jl")
     include("./subroutines.jl")
 
-    export PDLP_MultiSobol
+    export PDLP_MultiSobol, PDLP_MultiSobol_MultiGPU
 end
