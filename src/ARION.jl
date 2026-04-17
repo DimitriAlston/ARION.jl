@@ -12,5 +12,6 @@ module ARION
     include("./kernels.jl")
     include("./subroutines.jl")
 
-    export PDLP_MultiSobol, PDLP_MultiSobol_MultiGPU
+    export GroupMethod, GroupMethod_MultiGPU, KelleyMethod
+    export Problem, LoadedProblem
 end
