@@ -183,3 +183,17 @@ function extract_concave_relaxation_kernel(comparison_vector, result_storage, n_
     end
     return nothing
 end
+
+# For KelleyMethod, load in the midpoint for each variable, for each node
+function load_midpoints_kernel(input_storage, eval_points, lvbs, uvbs, n_LPs, var)
+    idx = threadIdx().x + (blockIdx().x - Int32(1)) * blockDim().x
+    stride = blockDim().x * gridDim().x
+    while idx <= n_LPs
+        eval_points[idx,var] = (lvbs[idx,var] + uvbs[idx,var])/2
+        input_storage[idx,Int32(1)] = (lvbs[idx,var] + uvbs[idx,var])/2
+        input_storage[idx,Int32(2)] = lvbs[idx,var]
+        input_storage[idx,Int32(3)] = uvbs[idx,var]
+        idx += stride
+    end
+    return nothing
+end
