@@ -340,7 +340,7 @@ function make_current_node!(t::T, m::EAGO.GlobalOptimizer) where T <: ExtendGPU
     prev = copy(t.node_storage[t.node_len])
     new_lower = t.lower_bound_storage[t.node_len]
     m._lower_objective_value = max(prev.lower_bound, new_lower)
-    m._lower_solution[1:end-1] .= t.CPU_LP_solutions[t.node_len,:]
+    m._lower_solution[1:end-m._epigraph_occurred] .= t.CPU_LP_solutions[t.node_len,:]
     t.node_len -= 1
     m._current_node = NodeBB(prev.lower_variable_bounds, prev.upper_variable_bounds,
                              prev.is_integer, prev.continuous, new_lower, prev.upper_bound,
