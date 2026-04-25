@@ -866,6 +866,10 @@ Base.@kwdef mutable struct KelleyMethod <: ExtendGPU
     LP_objectives::CuArray{Float64}
     "Previous iteration objective values from PDLP, used to determine termination of Kelley's algorithm"
     previous_LP_objectives::CuArray{Float64}
+    "Absolute tolerance to stop iterations of Kelley's algorithm (default = 1E-6)"
+    cut_tolerance_abs::Float64 = 1E-6
+    "Relative tolerance to stop iterations of Kelley's algorithm (default = 1E-3)"
+    cut_tolerance_rel::Float64 = 1E-3
     "Lower bound storage to hold calculated lower bounds for multiple nodes"
     lower_bound_storage::Vector{Float64} = Vector{Float64}()
     "Node storage to hold individual nodes outside of the main stack"
@@ -912,9 +916,6 @@ Base.@kwdef mutable struct KelleyMethod <: ExtendGPU
     cpu_solve_flag::Vector{Bool}
     "The CPU LP solver being used"
     cpu_solver
-    "Flag to validate BatchPDLP results against the cpu_solver (primarily to
-    be used as a diagnostic for BatchPDLP)"
-    validate_vs_CPU::Bool
 end
 
 function KelleyMethod(
@@ -927,8 +928,9 @@ function KelleyMethod(
     PDLP_iteration_limit::Int = 10000000,
     abs_tol::Float64 = 1E-8,
     rel_tol::Float64 = 1E-8,
+    cut_tolerance_abs::Float64 = 1E-6,
+    cut_tolerance_rel::Float64 = 1E-3,
     skip_hard_problems::Bool = true,
-    validate_vs_CPU::Bool = false,
     use_dual_obj::Bool = false,
     cpu_solver = GLPK.Optimizer(),
     )
@@ -1000,7 +1002,7 @@ function KelleyMethod(
                     problem.geq_sp,
                     problem.nvars, 
                     max_parallel_nodes, 
-                    PDLPData(max_parallel_nodes, var_count+1, next_row-1,
+                    PDLPData(max_parallel_nodes, var_count+1, size(sparsity, 1),
                             iteration_limit=PDLP_iteration_limit,
                             sparsity=sparsity,
                             abs_tol=abs_tol, rel_tol=rel_tol,
@@ -1012,6 +1014,8 @@ function KelleyMethod(
                     CuArray{Float64}(undef, max_parallel_nodes, var_count), # Evaluation points
                     CuArray{Float64}(undef, max_parallel_nodes, 1), # Objective results
                     CuArray{Float64}(undef, max_parallel_nodes, 1), # Previous objective results
+                    cut_tolerance_abs,
+                    cut_tolerance_rel,
                     Vector{Float64}(undef, max_parallel_nodes), # Space to transfer results to CPU (CPU)
                     Vector{NodeBB}(undef, max_parallel_nodes), # Node storage (CPU)
                     0, # Tracker for number of nodes
@@ -1034,6 +1038,5 @@ function KelleyMethod(
                     Vector{Bool}(undef, size(sparsity, 1)*max_parallel_nodes), # CPU active constraint list
                     Vector{Bool}(undef, max_parallel_nodes), # CPU solve flag
                     cpu_solver,
-                    validate_vs_CPU,
     )
 end

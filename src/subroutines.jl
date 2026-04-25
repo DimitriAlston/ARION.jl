@@ -271,6 +271,9 @@ function print_gpu_iteration!(m::EAGO.GlobalOptimizer, gpu_iteration_count::Int,
         # Print an iteration summary on mod(gpu_iteration_count, 10)==1, OR if end_flag==true
         # if mod(gpu_iteration_count, 10)==0 || end_flag
         if true
+            if m._node_count==0
+                m._global_lower_bound = m._min_converged_value
+            end
             # Print start
             print_str = "| "
 
@@ -287,7 +290,7 @@ function print_gpu_iteration!(m::EAGO.GlobalOptimizer, gpu_iteration_count::Int,
             print_str *= (" "^(max_len - len_str))*temp_str*" | "
 
             # Print lower bound
-            max_len = 11
+            max_len = 15
             temp_str = string(round(m._global_lower_bound, digits=3))
             len_str = length(temp_str)
             print_str *= (" "^(max_len - len_str))*temp_str*" | "
@@ -299,7 +302,7 @@ function print_gpu_iteration!(m::EAGO.GlobalOptimizer, gpu_iteration_count::Int,
             print_str *= (" "^(max_len - len_str))*temp_str*" | "
 
             # Print absolute gap between lower and upper bound
-            max_len = 11
+            max_len = 15
             temp_str = string(round(abs(m._global_upper_bound - m._global_lower_bound), digits=3))
             len_str = length(temp_str)
             print_str *= (" "^(max_len - len_str))*temp_str*" | "
@@ -570,7 +573,7 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
     ################################################################################
 
     # Run BatchPDLP if we have enough parallel LPs (otherwise, use the CPU solver)
-    if t.node_len > t.GPU_LP_break_point
+    if t.node_len >= t.GPU_LP_break_point
         # Run BatchPDLP
         pdlp_solves += @elapsed PDLP(t.PDLP_data, solutions=t.LP_solutions, objectives=t.LP_objectives, return_dual_obj=t.use_dual_obj, global_upper_bound = m._global_upper_bound)
         misc_setup += @elapsed push!(t.LPs_solved, t.node_len)
@@ -636,7 +639,7 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
                     term = MOI.get(t.cpu_solver, MOI.TerminationStatus())
                     if term == MOI.OPTIMAL
                         if t.use_dual_obj
-                            t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.DualObjectiveValue())
+                            t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveBound())
                         else
                             t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveValue())
                         end
@@ -698,7 +701,7 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
                 if term == MOI.OPTIMAL
                     cpu_bound = 0.0
                     if t.use_dual_obj
-                        cpu_bound =  MOI.get(t.cpu_solver, MOI.DualObjectiveValue())
+                        cpu_bound =  MOI.get(t.cpu_solver, MOI.ObjectiveBound())
                     else
                         cpu_bound =  MOI.get(t.cpu_solver, MOI.ObjectiveValue())
                     end
@@ -772,7 +775,7 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
                 term = MOI.get(t.cpu_solver, MOI.TerminationStatus())
                 if term == MOI.OPTIMAL
                     if t.use_dual_obj
-                        t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.DualObjectiveValue())
+                        t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveBound())
                     else
                         t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveValue())
                     end
@@ -1312,7 +1315,7 @@ function lower_problem_gpu!(t::GroupMethod_MultiGPU, m::EAGO.GlobalOptimizer)
     ################################################################################
 
     # Run BatchPDLP if we have enough parallel LPs (otherwise, use the CPU solver)
-    if t.node_len > t.GPU_LP_break_point
+    if t.node_len >= t.GPU_LP_break_point
         # Run BatchPDLP
         pdlp_solves += @elapsed CUDA.@sync begin
             @sync begin
@@ -1405,7 +1408,7 @@ function lower_problem_gpu!(t::GroupMethod_MultiGPU, m::EAGO.GlobalOptimizer)
                     term = MOI.get(t.cpu_solver, MOI.TerminationStatus())
                     if term == MOI.OPTIMAL
                         if t.use_dual_obj
-                            t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.DualObjectiveValue())
+                            t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveBound())
                         else
                             t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveValue())
                         end
@@ -1471,7 +1474,7 @@ function lower_problem_gpu!(t::GroupMethod_MultiGPU, m::EAGO.GlobalOptimizer)
                 if term == MOI.OPTIMAL
                     cpu_bound = 0.0
                     if t.use_dual_obj
-                        cpu_bound =  MOI.get(t.cpu_solver, MOI.DualObjectiveValue())
+                        cpu_bound =  MOI.get(t.cpu_solver, MOI.ObjectiveBound())
                     else
                         cpu_bound =  MOI.get(t.cpu_solver, MOI.ObjectiveValue())
                     end
@@ -1556,7 +1559,7 @@ function lower_problem_gpu!(t::GroupMethod_MultiGPU, m::EAGO.GlobalOptimizer)
                 term = MOI.get(t.cpu_solver, MOI.TerminationStatus())
                 if term == MOI.OPTIMAL
                     if t.use_dual_obj
-                        t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.DualObjectiveValue())
+                        t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveBound())
                     else
                         t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveValue())
                     end
@@ -1582,13 +1585,460 @@ function lower_problem_gpu!(t::GroupMethod_MultiGPU, m::EAGO.GlobalOptimizer)
     return nothing
 end
 
+function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
+    ################################################################################
+    ##########  Step 0) Miscellaneous setup and tracking
+    ################################################################################
+    # Set time trackers to 0
+    misc_setup = 0.0
+    data_transfer = 0.0
+    point_load_time = 0.0
+    calculating_relaxations = 0.0
+    adding_constraints = 0.0
+    pdlp_solves = 0.0
+    cpu_solver_setup = 0.0
+    cpu_solve_time = 0.0
+    
+    # Add information about how many nodes were solved
+    misc_setup += @elapsed push!(t.nodes_solved, t.node_len)
+
+
+    ################################################################################
+    ##########  Step 1) Determine problem parameters
+    ################################################################################
+    misc_setup += @elapsed begin
+        n_LPs = t.node_len 
+        n_points = t.node_len
+        var_count = t.n_vars
+        geq_len = length(t.geq_cons)
+        leq_len = length(t.leq_cons)
+        eq_len = length(t.eq_cons)
+    end
+
+
+    ################################################################################
+    ##########  Step 2) Set up initial evaluation points
+    ################################################################################
+    # Load in lower and upper bounds from t.all_lvbs / t.all_uvbs
+    data_transfer += @elapsed CUDA.@sync begin
+        # Load in lower and upper bounds
+        copyto!(t.lvbs_d, t.all_lvbs)
+        copyto!(t.uvbs_d, t.all_uvbs)
+    end
+
+    # Load in [midpoint, lbd, ubd] for every variable, for every LP
+    point_load_time += @elapsed CUDA.@sync for var in 1:var_count
+        CUDA.@sync @cuda blocks = t.n_blocks threads=Int32(256) load_midpoints_kernel(
+            t.input_storage[var],
+            t.eval_points,
+            t.lvbs_d,
+            t.uvbs_d,
+            n_LPs,
+            var
+        )
+    end
+
+
+    ################################################################################
+    ##########  Step 3) Reset the PDLP struct
+    ################################################################################
+
+    misc_setup += @elapsed CUDA.@sync begin
+        # Set up a convenient reference for the original_problem field
+        LPs = t.PDLP_data.original_problem
+
+        # Reset bounds to [-Inf, [lvbs]...], [Inf, [uvbs]...], where the first index
+        # is for the epigraph variable
+        @views begin
+            LPs.variable_lower_bounds[1:n_LPs,1] .= -Inf
+            LPs.variable_lower_bounds[1:n_LPs,2:end] .= t.lvbs_d[1:n_LPs,:]
+            LPs.variable_upper_bounds[1:n_LPs,1] .= Inf
+            LPs.variable_upper_bounds[1:n_LPs,2:end] .= t.uvbs_d[1:n_LPs,:]
+        end
+
+        # Reset the constraint matrix and right-hand side to zeros
+        CUDA.fill!(LPs.constraint_matrix, 0.0)
+        CUDA.fill!(LPs.right_hand_side, 0.0)
+
+        # Reset the objective vector to minimize the epigraph variable
+        LPs.objective_vector[1:n_LPs,1] .= 1.0
+        LPs.objective_vector[1:n_LPs,2:end] .= 0.0
+        CUDA.fill!(LPs.objective_constant, 0.0)
+
+        # Set the current LP length to 0, and identify the number of LPs
+        t.PDLP_data.dims.current_LP_length = Int32(0) # Zero, until we add constraints
+        t.PDLP_data.dims.n_LPs = Int32(n_LPs)
+
+        # Reset the skip flag to be `false` for 1:n_LPs and `true` for n_LPs+1:end
+        t.PDLP_data.skip_flag[1:n_LPs] .= false
+        t.PDLP_data.skip_flag[n_LPs+1:end] .= true
+
+        # Reset active constraint flag to be false (gets set to true when new
+        # constraints are added)
+        CUDA.fill!(t.PDLP_data.active_constraint, false)
+    end
+    
+
+    ################################################################################
+    ##########  Step 4) Calculate relaxations and add constraints
+    ################################################################################
+
+    # Calculate relaxations for the objective function and add as constraints to the LP
+    calculating_relaxations += @elapsed CUDA.@sync @views t.obj_fun(t.result_storage[1:n_points,:], [t.input_storage[j][1:n_points,:] for j=1:var_count]...)
+    adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_lower_bound(LPs, t.result_storage[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims)
+    adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_objective_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims)
+
+    # EQ constraints
+    for i = 1:eq_len
+        calculating_relaxations += @elapsed CUDA.@sync @views t.eq_cons[i](t.result_storage[1:n_points,:], [t.input_storage[j][1:n_points,:] for j=1:var_count]...)
+        adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims, geq=false)
+        adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims, geq=true)
+    end
+
+    # LEQ constraints
+    for i = 1:leq_len
+        calculating_relaxations += @elapsed CUDA.@sync @views t.leq_cons[i](t.result_storage[1:n_LPs,:], [t.input_storage[j][1:n_LPs,:] for j=1:var_count]...)
+        adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims, geq=false)
+    end
+
+    # GEQ constraints
+    for i = 1:geq_len
+        calculating_relaxations += @elapsed CUDA.@sync @views t.geq_cons[i](t.result_storage[1:n_LPs,:], [t.input_storage[j][1:n_LPs,:] for j=1:var_count]...)
+        adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims, geq=true)
+    end
+
+
+    ################################################################################
+    ##########  Step 5) Run PDLP
+    ################################################################################
+
+    if t.PDLP_data.parameters.skip_hard_problems || t.node_len < t.GPU_LP_break_point
+        # If we're above the break point, run BatchPDLP
+        if t.node_len >= t.GPU_LP_break_point
+            pdlp_solves += @elapsed PDLP(t.PDLP_data, solutions=t.LP_solutions, objectives=t.LP_objectives, return_dual_obj=t.use_dual_obj, global_upper_bound = m._global_upper_bound)
+            misc_setup += @elapsed push!(t.LPs_solved, t.node_len)
+
+            # Copy objectives and solutions to the GPU (Some will be -Inf if
+            # BatchPDLP skipped those problems)
+            if t.node_len <= 0.3*t.max_parallel_nodes
+                data_transfer += @elapsed CUDA.@sync begin
+                    @views copyto!(t.lower_bound_storage[1:t.node_len,:], Array(view(t.LP_objectives, 1:t.node_len, :)))
+                    @views copyto!(t.CPU_LP_solutions[1:t.node_len], Array(view(t.LP_solutions, 1:t.node_len)))
+                end
+            else
+                data_transfer += @elapsed CUDA.@sync begin
+                    copyto!(t.lower_bound_storage, t.LP_objectives)
+                    copyto!(t.CPU_LP_solutions, t.LP_solutions)
+                end
+            end
+        end
+        
+        # Transfer data to the CPU. If we're below roughly 30% of the max size, 
+        # it's faster to use views than to copy the entire CuArray
+        if t.node_len <= 0.3*t.max_parallel_nodes
+            constr_len = Int(t.node_len*(size(t.cpu_constraint_mat,1)/t.max_parallel_nodes))
+            data_transfer += @elapsed CUDA.@sync begin
+                @views copyto!(t.cpu_constraint_mat[1:constr_len,:], Array(view(t.PDLP_data.original_problem.constraint_matrix, 1:constr_len, :)))
+                @views copyto!(t.cpu_rhs[1:constr_len], Array(view(t.PDLP_data.original_problem.right_hand_side, 1:constr_len)))
+                @views copyto!(t.cpu_active_constraint[1:constr_len], Array(view(t.PDLP_data.active_constraint, 1:constr_len)))
+                if t.node_len >= t.GPU_LP_break_point
+                    @views copyto!(t.cpu_solve_flag[1:t.node_len], Array(view(t.PDLP_data.termination_reason, 1:t.node_len) .== BatchPDLP.TERMINATION_REASON_IMPATIENCE))
+                else
+                    t.cpu_solve_flag[1:t.node_len] .= true
+                end
+            end
+        else
+            data_transfer += @elapsed CUDA.@sync begin
+                copyto!(t.cpu_constraint_mat, t.PDLP_data.original_problem.constraint_matrix)
+                copyto!(t.cpu_rhs, t.PDLP_data.original_problem.right_hand_side)
+                copyto!(t.cpu_active_constraint, t.PDLP_data.active_constraint)
+                if t.node_len >= t.GPU_LP_break_point
+                    copyto!(t.cpu_solve_flag, t.PDLP_data.termination_reason .== BatchPDLP.TERMINATION_REASON_IMPATIENCE)
+                else
+                    t.cpu_solve_flag[1:t.node_len] .= true
+                end
+            end
+        end
+
+        # Solve remaining (or all) problems using the CPU solver
+        for i = 1:t.node_len
+            if !t.cpu_solve_flag[i]
+                continue
+            end
+
+            start = (i-1)*t.PDLP_data.dims.total_LP_length
+            cpu_solver_setup += @elapsed solve_time = @views solve_on_cpu(
+                                                        t.cpu_solver,
+                                                        t.all_lvbs[i,:],
+                                                        t.all_uvbs[i,:],
+                                                        var_count,
+                                                        t.PDLP_data.dims.current_LP_length,
+                                                        t.cpu_active_constraint[start+1:start+t.PDLP_data.dims.current_LP_length],
+                                                        t.cpu_constraint_mat[start+1:start+t.PDLP_data.dims.current_LP_length, :],
+                                                        t.cpu_rhs[start+1:start+t.PDLP_data.dims.current_LP_length],
+                                                        t.use_dual_obj,
+                                                        t.CPU_LP_solutions[i,:],
+                                                        t.lower_bound_storage,
+                                                        i
+                                                    )
+            cpu_solver_setup -= solve_time
+            cpu_solve_time += solve_time
+        end
+    else
+        # Problems are only solved using BatchPDLP
+        pdlp_solves += @elapsed PDLP(t.PDLP_data, solutions=t.LP_solutions, objectives=t.LP_objectives, return_dual_obj=t.use_dual_obj, global_upper_bound = m._global_upper_bound)
+        misc_setup += @elapsed push!(t.LPs_solved, t.node_len)
+
+        # Copy objectives and solutions to the GPU
+        if t.node_len <= 0.3*t.max_parallel_nodes
+            data_transfer += @elapsed CUDA.@sync begin
+                @views copyto!(t.lower_bound_storage[1:t.node_len,:], Array(view(t.LP_objectives, 1:t.node_len, :)))
+                @views copyto!(t.CPU_LP_solutions[1:t.node_len], Array(view(t.LP_solutions, 1:t.node_len)))
+            end
+        else
+            data_transfer += @elapsed CUDA.@sync begin
+                copyto!(t.lower_bound_storage, t.LP_objectives)
+                copyto!(t.CPU_LP_solutions, t.LP_solutions)
+            end
+        end
+    end
+
+
+    ################################################################################
+    ##########  Step 6) Perform Kelley's Algorithm Iterations
+    ################################################################################
+
+    # Keep a running tally of how many LPs are still active
+    active_count = t.node_len
+
+    for cut = 2:t.max_cuts
+        # Store the previous iteration's objective values and bring solutions 
+        # back from t.CPU_LP_solutions
+        data_transfer += @elapsed CUDA.@sync begin
+            copyto!(t.previous_LP_objectives, t.LP_objectives)
+            copyto!(t.LP_solutions, t.CPU_LP_solutions)
+        end
+
+        # Adjust bounds for each variable and save in eval_points and input_storage
+        point_load_time += @elapsed for var = 1:var_count
+            CUDA.@sync @cuda blocks=16 threads=1024 bound_offset_kernel(
+                t.LP_solutions,
+                t.input_storage[var],
+                t.eval_points,
+                t.lvbs_d,
+                t.uvbs_d,
+                Int32(n_LPs),
+                Int32(var)
+                )
+        end
+
+        # Recalculate relaxations and add constraints (Note: currently nothing stops the same constraint
+        # from being added multiple times. Also, relaxations are still being computed for all t.node_len
+        # points despite only active_count relaxations being required)
+
+        # Calculate relaxations for the objective function and add as constraints to the LP
+        calculating_relaxations += @elapsed CUDA.@sync @views t.obj_fun(t.result_storage[1:n_points,:], [t.input_storage[j][1:n_points,:] for j=1:var_count]...)
+        adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_lower_bound(LPs, t.result_storage[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims)
+        adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_objective_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims)
+
+        # EQ constraints
+        for i = 1:eq_len
+            calculating_relaxations += @elapsed CUDA.@sync @views t.eq_cons[i](t.result_storage[1:n_points,:], [t.input_storage[j][1:n_points,:] for j=1:var_count]...)
+            adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims, geq=false)
+            adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims, geq=true)
+        end
+
+        # LEQ constraints
+        for i = 1:leq_len
+            calculating_relaxations += @elapsed CUDA.@sync @views t.leq_cons[i](t.result_storage[1:n_LPs,:], [t.input_storage[j][1:n_LPs,:] for j=1:var_count]...)
+            adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims, geq=false)
+        end
+
+        # GEQ constraints
+        for i = 1:geq_len
+            calculating_relaxations += @elapsed CUDA.@sync @views t.geq_cons[i](t.result_storage[1:n_LPs,:], [t.input_storage[j][1:n_LPs,:] for j=1:var_count]...)
+            adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims, geq=true)
+        end
+
+        # Solve updated LPs
+        if t.PDLP_data.parameters.skip_hard_problems || active_count < t.GPU_LP_break_point
+            # If we're above the break point, run BatchPDLP
+            if t.node_len >= t.GPU_LP_break_point
+                pdlp_solves += @elapsed PDLP(t.PDLP_data, solutions=t.LP_solutions, objectives=t.LP_objectives, return_dual_obj=t.use_dual_obj, global_upper_bound = m._global_upper_bound)
+                misc_setup += @elapsed push!(t.LPs_solved, t.node_len)
+
+                # Copy objectives and solutions to the GPU. If problems were skipped (skip_flag[i]=true),
+                # the lower bounds are not overwritten, so we can still move them all to the CPU
+                if t.node_len <= 0.3*t.max_parallel_nodes
+                    data_transfer += @elapsed CUDA.@sync begin
+                        @views copyto!(t.lower_bound_storage[1:t.node_len,:], Array(view(t.LP_objectives, 1:t.node_len, :)))
+                        @views copyto!(t.CPU_LP_solutions[1:t.node_len], Array(view(t.LP_solutions, 1:t.node_len)))
+                    end
+                else
+                    data_transfer += @elapsed CUDA.@sync begin
+                        copyto!(t.lower_bound_storage, t.LP_objectives)
+                        copyto!(t.CPU_LP_solutions, t.LP_solutions)
+                    end
+                end
+            end
+            
+            # Transfer data to the CPU. If we're below roughly 30% of the max size, 
+            # it's faster to use views than to copy the entire CuArray
+            if t.node_len <= 0.3*t.max_parallel_nodes
+                constr_len = Int(t.node_len*(size(t.cpu_constraint_mat,1)/t.max_parallel_nodes))
+                data_transfer += @elapsed CUDA.@sync begin
+                    @views copyto!(t.cpu_constraint_mat[1:constr_len,:], Array(view(t.PDLP_data.original_problem.constraint_matrix, 1:constr_len, :)))
+                    @views copyto!(t.cpu_rhs[1:constr_len], Array(view(t.PDLP_data.original_problem.right_hand_side, 1:constr_len)))
+                    @views copyto!(t.cpu_active_constraint[1:constr_len], Array(view(t.PDLP_data.active_constraint, 1:constr_len)))
+                    if t.node_len >= t.GPU_LP_break_point
+                        @views copyto!(t.cpu_solve_flag[1:t.node_len], Array(view(t.PDLP_data.termination_reason, 1:t.node_len) .== BatchPDLP.TERMINATION_REASON_IMPATIENCE .&& (!).(view(t.PDLP_data.skip_flag, 1:t.node_len))))
+                    else
+                        copyto!(t.cpu_solve_flag, (!).(t.PDLP_data.skip_flag))
+                    end
+                end
+            else
+                data_transfer += @elapsed CUDA.@sync begin
+                    copyto!(t.cpu_constraint_mat, t.PDLP_data.original_problem.constraint_matrix)
+                    copyto!(t.cpu_rhs, t.PDLP_data.original_problem.right_hand_side)
+                    copyto!(t.cpu_active_constraint, t.PDLP_data.active_constraint)
+                    if t.node_len >= t.GPU_LP_break_point
+                        copyto!(t.cpu_solve_flag, t.PDLP_data.termination_reason .== BatchPDLP.TERMINATION_REASON_IMPATIENCE .&& (!).(t.PDLP_data.skip_flag))
+                    else
+                        copyto!(t.cpu_solve_flag, (!).(t.PDLP_data.skip_flag))
+                    end
+                end
+            end
+
+            # Solve remaining (or all) problems using the CPU solver
+            for i = 1:t.node_len
+                if !t.cpu_solve_flag[i]
+                    continue
+                end
+
+                start = (i-1)*t.PDLP_data.dims.total_LP_length
+                cpu_solver_setup += @elapsed solve_time = @views solve_on_cpu(
+                                                            t.cpu_solver,
+                                                            t.all_lvbs[i,:],
+                                                            t.all_uvbs[i,:],
+                                                            var_count,
+                                                            t.PDLP_data.dims.current_LP_length,
+                                                            t.cpu_active_constraint[start+1:start+t.PDLP_data.dims.current_LP_length],
+                                                            t.cpu_constraint_mat[start+1:start+t.PDLP_data.dims.current_LP_length, :],
+                                                            t.cpu_rhs[start+1:start+t.PDLP_data.dims.current_LP_length],
+                                                            t.use_dual_obj,
+                                                            t.CPU_LP_solutions[i,:],
+                                                            t.lower_bound_storage,
+                                                            i
+                                                        )
+                cpu_solver_setup -= solve_time
+                cpu_solve_time += solve_time
+            end
+        else
+            # Problems are only solved using BatchPDLP
+            pdlp_solves += @elapsed PDLP(t.PDLP_data, solutions=t.LP_solutions, objectives=t.LP_objectives, return_dual_obj=t.use_dual_obj, global_upper_bound = m._global_upper_bound)
+            misc_setup += @elapsed push!(t.LPs_solved, t.node_len)
+
+            # Copy objectives and solutions to the GPU
+            if t.node_len <= 0.3*t.max_parallel_nodes
+                data_transfer += @elapsed CUDA.@sync begin
+                    @views copyto!(t.lower_bound_storage[1:t.node_len,:], Array(view(t.LP_objectives, 1:t.node_len, :)))
+                    @views copyto!(t.CPU_LP_solutions[1:t.node_len], Array(view(t.LP_solutions, 1:t.node_len)))
+                end
+            else
+                data_transfer += @elapsed CUDA.@sync begin
+                    copyto!(t.lower_bound_storage, t.LP_objectives)
+                    copyto!(t.CPU_LP_solutions, t.LP_solutions)
+                end
+            end
+        end
+
+        # Check if the solutions have improved from this iteration. If not, set the skip_flag to true
+        # and update active_count
+        if t.node_len <= 0.3*t.max_parallel_nodes
+            misc_setup += @elapsed CUDA.@sync begin
+                @views t.PDLP_data.skip_flag[1:t.node_len] .= ((t.LP_objectives[1:t.node_len] .- t.previous_LP_objectives[1:t.node_len]) .< t.cut_tolerance_abs) .||
+                                                              ((t.LP_objectives[1:t.node_len] .- t.previous_LP_objectives[1:t.node_len]) .< (t.cut_tolerance_rel .* abs.(max.(t.LP_objectives[1:t.node_len], t.previous_LP_objectives[1:t.node_len]))))
+            end
+        else
+            misc_setup += @elapsed CUDA.@sync begin
+                t.PDLP_data.skip_flag .= ((t.LP_objectives .- t.previous_LP_objectives) .< t.cut_tolerance_abs) .||
+                                         ((t.LP_objectives .- t.previous_LP_objectives) .< (t.cut_tolerance_rel .* abs.(max.(t.LP_objectives, t.previous_LP_objectives))))
+            end
+        end
+        misc_setup += @elapsed CUDA.@sync active_count = t.max_parallel_nodes - count(t.PDLP_data.skip_flag)
+        
+        # If no LPs are active anymore, break out of the loop
+        if iszero(active_count)
+            break
+        end
+    end
+
+    # Push profiling information to timers
+    push!(t.timers[2], misc_setup)
+    push!(t.timers[3], data_transfer)
+    push!(t.timers[25], point_load_time)
+    push!(t.timers[5], calculating_relaxations)
+    push!(t.timers[7], adding_constraints)
+    push!(t.timers[8], pdlp_solves)
+    push!(t.timers[10], cpu_solver_setup)
+    push!(t.timers[11], cpu_solve_time)
+    return nothing
+end
+
+
+function solve_on_cpu(cpu_solver, lvbs, uvbs, var_count, current_LP_length, active_constraint, constraint_mat, rhs, use_dual_obj, LP_solutions, lower_bound_storage, index)
+    # Reset the solver
+    MOI.empty!(cpu_solver)
+
+    # Relaxations will be added using an epigraph variable
+    epi = MOI.add_variable(cpu_solver)
+
+    # Create the variables, using the bounds for the i-th problem
+    vi = Vector{MOI.VariableIndex}(undef, var_count)
+    for j = 1:var_count
+        vi[j], (_,_) = MOI.add_constrained_variable(cpu_solver, (MOI.GreaterThan(lvbs[j]), MOI.LessThan(uvbs[j])))
+    end
+
+    # Add the constraints
+    for j = 1:current_LP_length
+        if active_constraint[j]
+            @views MOI.add_constraint(cpu_solver, constraint_mat[j,1]*epi + 
+                                    sum(constraint_mat[j,2:end].*vi[1:var_count]),
+                                    MOI.GreaterThan(rhs[j]))
+        end
+    end
+
+    # Add the objective function (always already in epigraph form)
+    MOI.set(cpu_solver, MOI.ObjectiveSense(), MOI.MIN_SENSE)
+    MOI.set(cpu_solver, MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}}(), 0.0+epi)
+
+    # Optimize
+    cpu_solve_time = @elapsed MOI.optimize!(cpu_solver)
+
+    # Store results
+    term = MOI.get(cpu_solver, MOI.TerminationStatus())
+    if term == MOI.OPTIMAL
+        if use_dual_obj
+            lower_bound_storage[index] = MOI.get(cpu_solver, MOI.ObjectiveBound())
+        else
+            lower_bound_storage[index] = MOI.get(cpu_solver, MOI.ObjectiveValue())
+        end
+        LP_solutions .= MOI.get.(cpu_solver, MOI.VariablePrimal(), vi)
+    else
+        lower_bound_storage[index] = Inf
+    end
+
+    return cpu_solve_time
+end
+
+
 # Helper function to print an LP constraint matrix for diagnostic purposes. 
 # Use by calling, e.g.,:
 # print_constraint_matrix(
-#       Array(LPs.constraint_matrix), 
-#       Array(LPs.right_hand_side), 
-#       t.max_parallel_nodes,
-#       1)
+#     Array(LPs.constraint_matrix), 
+#     Array(LPs.right_hand_side), 
+#     Int(length(t.cpu_active_constraint)/t.max_parallel_nodes),
+#     1)
 function print_constraint_matrix(constraint_matrix, right_hand_side, rows_per_LP, LP_to_print)
     display(hcat(constraint_matrix[(LP_to_print-1)*rows_per_LP+1:LP_to_print*rows_per_LP,:], fill(">=", rows_per_LP), right_hand_side[(LP_to_print-1)*rows_per_LP+1:LP_to_print*rows_per_LP]))
 end

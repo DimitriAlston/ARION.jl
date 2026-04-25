@@ -197,3 +197,29 @@ function load_midpoints_kernel(input_storage, eval_points, lvbs, uvbs, n_LPs, va
     end
     return nothing
 end
+
+# For KelleyMethod, offset solutions by 5% away from the bounds
+function bound_offset_kernel(
+    LP_solutions,
+    input_storage,
+    eval_points,
+    lvbs,
+    uvbs,
+    len::Int32,
+    var::Int32;
+    offset::Float64 = 0.05 #0.05
+    )
+    idx = threadIdx().x + (blockIdx().x - Int32(1)) * blockDim().x
+    stride = blockDim().x * gridDim().x
+
+    while idx <= len
+        diff = (uvbs[idx,var] - lvbs[idx,var])
+        result = max(lvbs[idx,var] + offset*diff, 
+                    min(uvbs[idx,var] - offset*diff,
+                    LP_solutions[idx,var]))
+        eval_points[idx,var] = result
+        input_storage[idx,Int32(1)] = result
+        idx += stride
+    end
+    return nothing
+end
