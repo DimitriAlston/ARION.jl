@@ -245,19 +245,20 @@ function solve_gpu!(ext::T, m::EAGO.GlobalOptimizer) where T <: ExtendGPU
     # println("              (Alt.) Preparing GLPK:| $(round(sum(ext.timers[10]), digits=6))")
     # println("              (Alt.) Running GLPK:  | $(round(sum(ext.timers[11]), digits=6))")
     # println("              Timing:               | $(round(sum(ext.timers[9]), digits=6))")
+    println("              Removing invalid constraints:  | $(round(sum(ext.timers[26]), digits=6))")
     # println("              [Untimed]:            | $(round(m._last_lower_problem_time - sum(sum.(ext.timers[1:11])), digits=6))")
     println("      Upper Problem:        | $(round(ext.timers[13][1], digits=6))")
     println("      Postprocessing:       | $(round(ext.timers[14][1], digits=6))")
     println("=======================================")
     println("")
-    println("  Diagnostic          |  Value")
-    println("=======================================")
+    # println("  Diagnostic          |  Value")
+    # println("=======================================")
     # println("  Iterations:         | $(m._iteration_count)")
     # println("      GPU Iterations: | $(gpu_iteration_count)")
     # println("      CPU Iterations: | $(m._iteration_count - gpu_iteration_count)")
     # println("  LPs Solved:         | $(sum(ext.LPs_solved))")
     # println("  Avg LPs / Iteration:| $(round(sum(ext.LPs_solved) / sum(ext.nodes_solved), digits=2))")
-    println("=======================================")
+    # println("=======================================")
 
     # Turn back on garbage collection
     GC.enable(true)
@@ -1707,6 +1708,16 @@ function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
         adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims, geq=true)
     end
 
+    # Remove invalid constraints that may have been added
+    constr_len = Int(t.node_len*(size(t.cpu_constraint_mat,1)/t.max_parallel_nodes))
+    bad_constraints += @elapsed CUDA.@sync @cuda blocks=t.n_blocks threads=Int32(1024) remove_NaNInf_kernel(
+                                                                                            t.PDLP_data.original_problem.constraint_matrix,
+                                                                                            t.PDLP_data.original_problem.right_hand_side,
+                                                                                            t.PDLP_data.active_constraint,
+                                                                                            Int32(constr_len),
+                                                                                            Int32(size(t.cpu_constraint_mat,2)))
+
+
 
     ################################################################################
     ##########  Step 5) Run PDLP
@@ -1821,7 +1832,7 @@ function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
 
         # Adjust bounds for each variable and save in eval_points and input_storage
         point_load_time += @elapsed for var = 1:var_count
-            CUDA.@sync @cuda blocks=16 threads=1024 bound_offset_kernel(
+            CUDA.@sync @cuda blocks=t.n_blocks threads=Int32(1024) bound_offset_kernel(
                 t.LP_solutions,
                 t.input_storage[var],
                 t.eval_points,
@@ -1859,6 +1870,15 @@ function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
             calculating_relaxations += @elapsed CUDA.@sync @views t.geq_cons[i](t.result_storage[1:n_LPs,:], [t.input_storage[j][1:n_LPs,:] for j=1:var_count]...)
             adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims, geq=true)
         end
+        
+        # Remove invalid constraints that may have been added
+        constr_len = Int(t.node_len*(size(t.cpu_constraint_mat,1)/t.max_parallel_nodes))
+        bad_constraints += @elapsed CUDA.@sync @cuda blocks=t.n_blocks threads=Int32(1024) remove_NaNInf_kernel(
+                                                                                                t.PDLP_data.original_problem.constraint_matrix,
+                                                                                                t.PDLP_data.original_problem.right_hand_side,
+                                                                                                t.PDLP_data.active_constraint,
+                                                                                                Int32(constr_len),
+                                                                                                Int32(size(t.cpu_constraint_mat,2)))
 
         # Solve updated LPs
         if t.PDLP_data.parameters.skip_hard_problems || active_count < t.GPU_LP_break_point
@@ -1982,6 +2002,7 @@ function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
     push!(t.timers[8], pdlp_solves)
     push!(t.timers[10], cpu_solver_setup)
     push!(t.timers[11], cpu_solve_time)
+    push!(t.timers[26], bad_constraints)
     return nothing
 end
 

@@ -223,3 +223,39 @@ function bound_offset_kernel(
     end
     return nothing
 end
+
+# A kernel to remove NaN/Inf rows from the constraint matrix/RHS
+function remove_NaNInf_kernel(
+    constraint_matrix,
+    right_hand_side,
+    active_constraint,
+    total_rows,
+    matrix_width,
+    )
+    idx = threadIdx().x + (blockIdx().x - Int32(1)) * blockDim().x
+    stride = blockDim().x * gridDim().x
+
+    while idx <= total_rows
+        # Scan through the row
+        flag = isnan(right_hand_side[idx]) || isinf(right_hand_side[idx])
+        col = Int32(1)
+        while col <= matrix_width
+            flag |= (isnan(constraint_matrix[idx,col]) || isinf(constraint_matrix[idx,col]))
+            flag && break
+            col += Int32(1)
+        end
+
+        # If the flag is true, the whole row should get set to zeros
+        if flag
+            active_constraint[idx] = false
+            right_hand_side[idx] = 0.0
+            col = Int32(1)
+            while col <= matrix_width
+                constraint_matrix[idx,col] = 0.0
+                col += Int32(1)
+            end
+        end
+        idx += stride
+    end
+    return nothing
+end
