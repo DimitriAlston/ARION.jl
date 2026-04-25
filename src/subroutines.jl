@@ -372,6 +372,7 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
     pdlp_solves = 0.0
     cpu_solver_setup = 0.0
     cpu_solve_time = 0.0
+    bad_constraints = 0.0
     
     # Add information about how many nodes were solved
     misc_setup += @elapsed push!(t.nodes_solved, t.node_len)
@@ -567,6 +568,15 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
             @views add_best_cons_LP_constraints(LPs, t.result_storage[1:n_points,:], t.eval_points[1:n_points,:], t.comparison_vector[1:n_points], t.subgradient_checksum[1:n_points], t.PDLP_data.dims, t.PDLP_data.active_constraint, t.num_eval_points, sum(t.geq_sp[i])+1, geq=true)
         end
     end
+
+    # Remove invalid constraints that may have been added
+    constr_len = Int(t.node_len*(size(t.cpu_constraint_mat,1)/t.max_parallel_nodes))
+    bad_constraints += @elapsed CUDA.@sync @cuda blocks=t.n_blocks threads=Int32(1024) remove_NaNInf_kernel(
+                                                                                            t.PDLP_data.original_problem.constraint_matrix,
+                                                                                            t.PDLP_data.original_problem.right_hand_side,
+                                                                                            t.PDLP_data.active_constraint,
+                                                                                            Int32(constr_len),
+                                                                                            Int32(size(t.cpu_constraint_mat,2)))
 
 
     ################################################################################
@@ -799,6 +809,7 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
     push!(t.timers[8], pdlp_solves)
     push!(t.timers[10], cpu_solver_setup)
     push!(t.timers[11], cpu_solve_time)
+    push!(t.timers[26], bad_constraints)
     return nothing
 end
 lower_problem_gpu!(m::EAGO.GlobalOptimizer) = lower_problem_gpu!(EAGO._ext(m), m)
@@ -1599,6 +1610,7 @@ function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
     pdlp_solves = 0.0
     cpu_solver_setup = 0.0
     cpu_solve_time = 0.0
+    bad_constraints = 0.0
     
     # Add information about how many nodes were solved
     misc_setup += @elapsed push!(t.nodes_solved, t.node_len)
@@ -1849,7 +1861,6 @@ function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
 
         # Calculate relaxations for the objective function and add as constraints to the LP
         calculating_relaxations += @elapsed CUDA.@sync @views t.obj_fun(t.result_storage[1:n_points,:], [t.input_storage[j][1:n_points,:] for j=1:var_count]...)
-        adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_lower_bound(LPs, t.result_storage[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims)
         adding_constraints += @elapsed CUDA.@sync @views BatchPDLP.add_LP_objective_constraint(LPs, t.result_storage[1:n_LPs,:], t.eval_points[1:n_LPs,:], t.PDLP_data.active_constraint, t.PDLP_data.dims)
 
         # EQ constraints
