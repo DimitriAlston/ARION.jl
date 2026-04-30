@@ -1,12 +1,11 @@
 
 
 module ARION
-    using CUDA, DocStringExtensions, LinearAlgebra, Sobol, MultiFloats, MathOptInterface
+    using CUDA, DocStringExtensions, LinearAlgebra, Sobol, MultiFloats
     using SourceCodeMcCormick, BatchPDLP
     using EAGO, GLPK
     import EAGO: optimize_hook!
-
-    const MOI = MathOptInterface
+    import MathOptInterface as MOI
 
     include("./extension.jl")
     include("./kernels.jl")

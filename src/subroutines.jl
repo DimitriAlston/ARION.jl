@@ -592,19 +592,36 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
         # Copy objectives and solutions to the CPU (If hard problems are being
         # skipped, some of these values will be -Inf from BatchPDLP, to be filled
         # in by the CPU solver shortly)
-        data_transfer += @elapsed CUDA.@sync begin
-            copyto!(t.lower_bound_storage, t.LP_objectives)
-            copyto!(t.CPU_LP_solutions, t.LP_solutions)
+        if t.node_len <= 0.3*t.max_parallel_nodes
+            data_transfer += @elapsed CUDA.@sync begin
+                @views copyto!(t.lower_bound_storage[1:t.node_len,:], Array(view(t.LP_objectives, 1:t.node_len, :)))
+                @views copyto!(t.CPU_LP_solutions[1:t.node_len], Array(view(t.LP_solutions, 1:t.node_len)))
+            end
+        else
+            data_transfer += @elapsed CUDA.@sync begin
+                copyto!(t.lower_bound_storage, t.LP_objectives)
+                copyto!(t.CPU_LP_solutions, t.LP_solutions)
+            end
         end
 
         # If hard problems are being skipped, solve the hard problems using
         # the designated CPU solver
         if t.PDLP_data.parameters.skip_hard_problems
-            data_transfer += @elapsed CUDA.@sync begin
-                copyto!(t.cpu_constraint_mat, t.PDLP_data.original_problem.constraint_matrix)
-                copyto!(t.cpu_rhs, t.PDLP_data.original_problem.right_hand_side)
-                copyto!(t.cpu_solve_flag, t.PDLP_data.termination_reason .== BatchPDLP.TERMINATION_REASON_IMPATIENCE)
-                copyto!(t.cpu_active_constraint, t.PDLP_data.active_constraint)
+            if t.node_len <= 0.3*t.max_parallel_nodes
+                constr_len = Int(t.node_len*(size(t.cpu_constraint_mat,1)/t.max_parallel_nodes))
+                data_transfer += @elapsed CUDA.@sync begin
+                    @views copyto!(t.cpu_constraint_mat[1:constr_len,:], Array(view(t.PDLP_data.original_problem.constraint_matrix, 1:constr_len, :)))
+                    @views copyto!(t.cpu_rhs[1:constr_len], Array(view(t.PDLP_data.original_problem.right_hand_side, 1:constr_len)))
+                    @views copyto!(t.cpu_active_constraint[1:constr_len], Array(view(t.PDLP_data.active_constraint, 1:constr_len)))
+                    @views copyto!(t.cpu_solve_flag[1:t.node_len], Array(view(t.PDLP_data.termination_reason, 1:t.node_len) .== BatchPDLP.TERMINATION_REASON_IMPATIENCE))
+                end
+            else
+                data_transfer += @elapsed CUDA.@sync begin
+                    copyto!(t.cpu_constraint_mat, t.PDLP_data.original_problem.constraint_matrix)
+                    copyto!(t.cpu_rhs, t.PDLP_data.original_problem.right_hand_side)
+                    copyto!(t.cpu_active_constraint, t.PDLP_data.active_constraint)
+                    copyto!(t.cpu_solve_flag, t.PDLP_data.termination_reason .== BatchPDLP.TERMINATION_REASON_IMPATIENCE)
+                end
             end
 
             for i = 1:t.node_len
@@ -612,53 +629,23 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
                     continue
                 end
 
-                cpu_solver_setup += @elapsed begin
-                    # Reset the solver
-                    MOI.empty!(t.cpu_solver)
-
-                    # Relaxations will be added using an epigraph variable
-                    epi = MOI.add_variable(t.cpu_solver)
-
-                    # Create the variables, using the bounds for the i-th problem
-                    vi = Vector{MOI.VariableIndex}(undef, var_count)
-                    for j = 1:var_count
-                        vi[j], (_,_) = MOI.add_constrained_variable(t.cpu_solver, (MOI.GreaterThan(t.all_lvbs[i,j]), MOI.LessThan(t.all_uvbs[i,j])))
-                    end
-
-                    # Identify the start point within the constraint/RHS fields
-                    start = (i-1)*t.PDLP_data.dims.total_LP_length
-
-                    # Add the constraints
-                    for j = 1:t.PDLP_data.dims.current_LP_length
-                        if t.cpu_active_constraint[start+j]
-                            @views MOI.add_constraint(t.cpu_solver, t.cpu_constraint_mat[start+j,1]*epi + 
-                                                    sum(t.cpu_constraint_mat[start+j,2:end].*vi[1:var_count]),
-                                                    MOI.GreaterThan(t.cpu_rhs[start+j]))
-                        end
-                    end
-
-                    # Add the objective function (always already in epigraph form)
-                    MOI.set(t.cpu_solver, MOI.ObjectiveSense(), MOI.MIN_SENSE)
-                    MOI.set(t.cpu_solver, MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}}(), 0.0+epi)
-                end
-
-                # Optimize
-                cpu_solve_time += @elapsed MOI.optimize!(t.cpu_solver)
-
-                # Move answers to lower-bound storage
-                cpu_solver_setup += @elapsed begin
-                    term = MOI.get(t.cpu_solver, MOI.TerminationStatus())
-                    if term == MOI.OPTIMAL
-                        if t.use_dual_obj
-                            t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveBound())
-                        else
-                            t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveValue())
-                        end
-                        t.CPU_LP_solutions[i,:] .= MOI.get.(t.cpu_solver, MOI.VariablePrimal(), vi)
-                    else
-                        t.lower_bound_storage[i] = Inf
-                    end
-                end
+                start = (i-1)*t.PDLP_data.dims.total_LP_length
+                cpu_solver_setup += @elapsed solve_time = @views solve_on_cpu(
+                                                            t.cpu_solver,
+                                                            t.all_lvbs[i,:],
+                                                            t.all_uvbs[i,:],
+                                                            var_count,
+                                                            t.PDLP_data.dims.current_LP_length,
+                                                            t.cpu_active_constraint[start+1:start+t.PDLP_data.dims.current_LP_length],
+                                                            t.cpu_constraint_mat[start+1:start+t.PDLP_data.dims.current_LP_length, :],
+                                                            t.cpu_rhs[start+1:start+t.PDLP_data.dims.current_LP_length],
+                                                            t.use_dual_obj,
+                                                            t.CPU_LP_solutions[i,:],
+                                                            t.lower_bound_storage,
+                                                            i
+                                                        )
+                cpu_solver_setup -= solve_time
+                cpu_solve_time += solve_time
             end
         end
 
@@ -741,60 +728,39 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
         end
     else
         # Only run the CPU solver
-        data_transfer += @elapsed CUDA.@sync begin
-            copyto!(t.cpu_constraint_mat, t.PDLP_data.original_problem.constraint_matrix)
-            copyto!(t.cpu_rhs, t.PDLP_data.original_problem.right_hand_side)
-            copyto!(t.cpu_active_constraint, t.PDLP_data.active_constraint)
+        if t.node_len <= 0.3*t.max_parallel_nodes
+            constr_len = Int(t.node_len*(size(t.cpu_constraint_mat,1)/t.max_parallel_nodes))
+            data_transfer += @elapsed CUDA.@sync begin
+                @views copyto!(t.cpu_constraint_mat[1:constr_len,:], Array(view(t.PDLP_data.original_problem.constraint_matrix, 1:constr_len, :)))
+                @views copyto!(t.cpu_rhs[1:constr_len], Array(view(t.PDLP_data.original_problem.right_hand_side, 1:constr_len)))
+                @views copyto!(t.cpu_active_constraint[1:constr_len], Array(view(t.PDLP_data.active_constraint, 1:constr_len)))
+            end
+        else
+            data_transfer += @elapsed CUDA.@sync begin
+                copyto!(t.cpu_constraint_mat, t.PDLP_data.original_problem.constraint_matrix)
+                copyto!(t.cpu_rhs, t.PDLP_data.original_problem.right_hand_side)
+                copyto!(t.cpu_active_constraint, t.PDLP_data.active_constraint)
+            end
         end
 
         for i = 1:t.node_len
-            cpu_solver_setup += @elapsed CUDA.@sync begin
-                # Reset the solver
-                MOI.empty!(t.cpu_solver)
-
-                # Relaxations will be added using an epigraph variable
-                epi = MOI.add_variable(t.cpu_solver)
-
-                # Create the variables, using the bounds for the i-th problem
-                vi = Vector{MOI.VariableIndex}(undef, var_count)
-                for j = 1:var_count
-                    vi[j], (_,_) = MOI.add_constrained_variable(t.cpu_solver, (MOI.GreaterThan(t.all_lvbs[i,j]), MOI.LessThan(t.all_uvbs[i,j])))
-                end
-
-                # Identify the start point within the constraint/RHS fields
-                start = (i-1)*t.PDLP_data.dims.total_LP_length
-
-                # Add the constraints
-                for j = 1:t.PDLP_data.dims.current_LP_length
-                    if t.cpu_active_constraint[start+j]
-                        @views MOI.add_constraint(t.cpu_solver, t.cpu_constraint_mat[start+j,1]*epi + 
-                                                sum(t.cpu_constraint_mat[start+j,2:end].*vi[1:var_count]),
-                                                MOI.GreaterThan(t.cpu_rhs[start+j]))
-                    end
-                end
-
-                # Add the objective function (always already in epigraph form)
-                MOI.set(t.cpu_solver, MOI.ObjectiveSense(), MOI.MIN_SENSE)
-                MOI.set(t.cpu_solver, MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}}(), 0.0+epi)
-            end
-
-            # Optimize
-            cpu_solve_time += @elapsed MOI.optimize!(t.cpu_solver)
-
-            # Move answers to lower-bound storage
-            cpu_solver_setup += @elapsed begin
-                term = MOI.get(t.cpu_solver, MOI.TerminationStatus())
-                if term == MOI.OPTIMAL
-                    if t.use_dual_obj
-                        t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveBound())
-                    else
-                        t.lower_bound_storage[i] = MOI.get(t.cpu_solver, MOI.ObjectiveValue())
-                    end
-                    t.CPU_LP_solutions[i,:] .= MOI.get.(t.cpu_solver, MOI.VariablePrimal(), vi)
-                else
-                    t.lower_bound_storage[i] = Inf
-                end
-            end
+            start = (i-1)*t.PDLP_data.dims.total_LP_length
+            cpu_solver_setup += @elapsed solve_time = @views solve_on_cpu(
+                                                        t.cpu_solver,
+                                                        t.all_lvbs[i,:],
+                                                        t.all_uvbs[i,:],
+                                                        var_count,
+                                                        t.PDLP_data.dims.current_LP_length,
+                                                        t.cpu_active_constraint[start+1:start+t.PDLP_data.dims.current_LP_length],
+                                                        t.cpu_constraint_mat[start+1:start+t.PDLP_data.dims.current_LP_length, :],
+                                                        t.cpu_rhs[start+1:start+t.PDLP_data.dims.current_LP_length],
+                                                        t.use_dual_obj,
+                                                        t.CPU_LP_solutions[i,:],
+                                                        t.lower_bound_storage,
+                                                        i
+                                                    )
+            cpu_solver_setup -= solve_time
+            cpu_solve_time += solve_time
         end
         misc_setup += @elapsed push!(t.LPs_solved, t.node_len)
     end
