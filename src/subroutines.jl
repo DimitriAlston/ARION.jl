@@ -295,38 +295,38 @@ function print_gpu_iteration!(m::EAGO.GlobalOptimizer, gpu_iteration_count::Int,
             print_str *= (" "^(max_len - len_str))*temp_str*" | "
 
             # Print lower bound
-            max_len = 15
-            temp_str = string(round(m._global_lower_bound, digits=3))
+            max_len = 11
+            temp_str = @sprintf "%.3E" m._global_lower_bound
             len_str = length(temp_str)
             print_str *= (" "^(max_len - len_str))*temp_str*" | "
 
             # Print upper bound
             max_len = 11
-            temp_str = string(round(m._global_upper_bound, digits=3))
+            temp_str = @sprintf "%.3E" m._global_upper_bound
             len_str = length(temp_str)
             print_str *= (" "^(max_len - len_str))*temp_str*" | "
 
             # Print absolute gap between lower and upper bound
-            max_len = 15
-            temp_str = string(round(abs(m._global_upper_bound - m._global_lower_bound), digits=3))
+            max_len = 11
+            temp_str = @sprintf "%.3E" abs(m._global_upper_bound - m._global_lower_bound)
             len_str = length(temp_str)
             print_str *= (" "^(max_len - len_str))*temp_str*" | "
 
             # Print relative gap between lower and upper bound
             max_len = 11
-            temp_str = string(round(EAGO.relative_gap(m._global_lower_bound, m._global_upper_bound), digits=3))
+            temp_str = @sprintf "%.3E" EAGO.relative_gap(m._global_lower_bound, m._global_upper_bound)
             len_str = length(temp_str)
             print_str *= (" "^(max_len - len_str))*temp_str*" | "
 
             # Print run time
             max_len = 11
-            temp_str = string(round(m._run_time, digits=2))
+            temp_str = @sprintf "%.2F" m._run_time
             len_str = length(temp_str)
             print_str *= (" "^(max_len - len_str))*temp_str*" | "
 
             # Print time remaining
             max_len = 11
-            temp_str = string(round(m._time_left, digits=2))
+            temp_str = @sprintf "%.2F" m._time_left
             len_str = length(temp_str)
             print_str *= (" "^(max_len - len_str))*temp_str*" |"
 

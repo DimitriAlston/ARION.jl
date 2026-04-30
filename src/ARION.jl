@@ -1,7 +1,7 @@
 
 
 module ARION
-    using CUDA, DocStringExtensions, LinearAlgebra, Sobol, MultiFloats
+    using CUDA, DocStringExtensions, LinearAlgebra, Sobol, MultiFloats, Printf
     using SourceCodeMcCormick, BatchPDLP
     using EAGO, GLPK
     import EAGO: optimize_hook!
