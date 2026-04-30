@@ -149,8 +149,8 @@ function solve_gpu!(ext::T, m::EAGO.GlobalOptimizer) where T <: ExtendGPU
                 this_time = @elapsed if m._preprocess_feasibility
                     count += 1
                     ext.node_storage[count] = m._current_node
-                    ext.all_lvbs[count,:] .= [_lower_bound(EAGO.FullVar(), m, i) for i = 1:EAGO._variable_num(EAGO.FullVar(), m)-m._epigraph_occurred]
-                    ext.all_uvbs[count,:] .= [_upper_bound(EAGO.FullVar(), m, i) for i = 1:EAGO._variable_num(EAGO.FullVar(), m)-m._epigraph_occurred]
+                    ext.all_lvbs[count,:] .= [EAGO._lower_bound(EAGO.FullVar(), m, i) for i = 1:EAGO._variable_num(EAGO.FullVar(), m)-m._epigraph_occurred]
+                    ext.all_uvbs[count,:] .= [EAGO._upper_bound(EAGO.FullVar(), m, i) for i = 1:EAGO._variable_num(EAGO.FullVar(), m)-m._epigraph_occurred]
                     if count == ext.max_parallel_nodes
                         break
                     end
@@ -231,24 +231,28 @@ function solve_gpu!(ext::T, m::EAGO.GlobalOptimizer) where T <: ExtendGPU
     println("  Process               |  Time (s)")
     println("=======================================")
     println("  EAGO Runtime:         | $(round(m._run_time, digits=6))")
-    println("      Preprocessing:        | $(round(ext.timers[12][1], digits=6))")
-    println("      Lower Problem:        | $(round(ext.timers[9][1] + ext.timers[17][1], digits=6))")
-    println("          CPU Lower-Bounding:   | $(round(ext.timers[9][1], digits=6))")
-    println("          GPU Lower-Bounding:   | $(round(ext.timers[17][1], digits=6))")
-    # println("              Miscellaneous Setup:  | $(round(sum(ext.timers[2]), digits=6))")
-    # println("              Data Transfer:        | $(round(sum(ext.timers[3]), digits=6))")
-    # println("              Initial Point Setup:  | $(round(sum(ext.timers[4]), digits=6))")
-    # println("              Relaxations:          | $(round(sum(ext.timers[5]), digits=6))")
-    # println("              MultiSobol Rescaling: | $(round(sum(ext.timers[6]), digits=6))")
-    # println("              Adding Constraints:   | $(round(sum(ext.timers[7]), digits=6))")
-    # println("              Running PDLP:         | $(round(sum(ext.timers[8]), digits=6))")
-    # println("              (Alt.) Preparing GLPK:| $(round(sum(ext.timers[10]), digits=6))")
-    # println("              (Alt.) Running GLPK:  | $(round(sum(ext.timers[11]), digits=6))")
-    # println("              Timing:               | $(round(sum(ext.timers[9]), digits=6))")
+    println("      Fathoming:            | $(round(sum(ext.timers[18]), digits=6))")
+    println("      Preprocessing:        | $(round(sum(ext.timers[12]), digits=6))")
+    println("      Populating Substack:  | $(round(sum(ext.timers[16]), digits=6))")
+    println("      Lower Problem:        | $(round(sum(ext.timers[9]) + sum(ext.timers[17]), digits=6))")
+    println("          CPU Lower-Bounding:   | $(round(sum(ext.timers[9]), digits=6))")
+    println("          GPU Lower-Bounding:   | $(round(sum(ext.timers[17]), digits=6))")
+    println("              Miscellaneous Setup:  | $(round(sum(ext.timers[2]), digits=6))")
+    println("              Data Transfer:        | $(round(sum(ext.timers[3]), digits=6))")
+    println("              Initial Point Setup:  | $(round(sum(ext.timers[4]), digits=6))")
+    println("              Relaxations:          | $(round(sum(ext.timers[5]), digits=6))")
+    println("              MultiSobol Rescaling: | $(round(sum(ext.timers[6]), digits=6))")
+    println("              Adding Constraints:   | $(round(sum(ext.timers[7]), digits=6))")
+    println("              Running PDLP:         | $(round(sum(ext.timers[8]), digits=6))")
+    println("              Preparing CPU solver: | $(round(sum(ext.timers[10]), digits=6))")
+    println("              Running CPU solver:   | $(round(sum(ext.timers[11]), digits=6))")
+    println("              Timing:               | $(round(sum(ext.timers[9]), digits=6))")
     println("              Removing invalid constraints:  | $(round(sum(ext.timers[26]), digits=6))")
-    # println("              [Untimed]:            | $(round(m._last_lower_problem_time - sum(sum.(ext.timers[1:11])), digits=6))")
-    println("      Upper Problem:        | $(round(ext.timers[13][1], digits=6))")
-    println("      Postprocessing:       | $(round(ext.timers[14][1], digits=6))")
+    println("      Depopulating Substack:| $(round(sum(ext.timers[19]), digits=6))")
+    println("      Upper Problem:        | $(round(sum(ext.timers[13]), digits=6))")
+    println("      Postprocessing:       | $(round(sum(ext.timers[14]), digits=6))")
+    println("      Branching:            | $(round(sum(ext.timers[15]), digits=6))")
+    println("      Logging:              | $(round(sum(ext.timers[20]), digits=6))")
     println("=======================================")
     println("")
     # println("  Diagnostic          |  Value")
@@ -595,8 +599,8 @@ function lower_problem_gpu!(t::GroupMethod, m::EAGO.GlobalOptimizer)
         # in by the CPU solver shortly)
         if t.node_len <= 0.3*t.max_parallel_nodes
             data_transfer += @elapsed CUDA.@sync begin
-                @views copyto!(t.lower_bound_storage[1:t.node_len,:], Array(view(t.LP_objectives, 1:t.node_len, :)))
-                @views copyto!(t.CPU_LP_solutions[1:t.node_len], Array(view(t.LP_solutions, 1:t.node_len)))
+                @views copyto!(t.lower_bound_storage[1:t.node_len], Array(view(t.LP_objectives, 1:t.node_len)))
+                @views copyto!(t.CPU_LP_solutions[1:t.node_len,:], Array(view(t.LP_solutions, 1:t.node_len,:)))
             end
         else
             data_transfer += @elapsed CUDA.@sync begin
@@ -1712,8 +1716,8 @@ function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
             # BatchPDLP skipped those problems)
             if t.node_len <= 0.3*t.max_parallel_nodes
                 data_transfer += @elapsed CUDA.@sync begin
-                    @views copyto!(t.lower_bound_storage[1:t.node_len,:], Array(view(t.LP_objectives, 1:t.node_len, :)))
-                    @views copyto!(t.CPU_LP_solutions[1:t.node_len], Array(view(t.LP_solutions, 1:t.node_len)))
+                    @views copyto!(t.lower_bound_storage[1:t.node_len], Array(view(t.LP_objectives, 1:t.node_len)))
+                    @views copyto!(t.CPU_LP_solutions[1:t.node_len,:], Array(view(t.LP_solutions, 1:t.node_len, :)))
                 end
             else
                 data_transfer += @elapsed CUDA.@sync begin
@@ -1782,8 +1786,8 @@ function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
         # Copy objectives and solutions to the GPU
         if t.node_len <= 0.3*t.max_parallel_nodes
             data_transfer += @elapsed CUDA.@sync begin
-                @views copyto!(t.lower_bound_storage[1:t.node_len,:], Array(view(t.LP_objectives, 1:t.node_len, :)))
-                @views copyto!(t.CPU_LP_solutions[1:t.node_len], Array(view(t.LP_solutions, 1:t.node_len)))
+                @views copyto!(t.lower_bound_storage[1:t.node_len], Array(view(t.LP_objectives, 1:t.node_len)))
+                @views copyto!(t.CPU_LP_solutions[1:t.node_len,:], Array(view(t.LP_solutions, 1:t.node_len, :)))
             end
         else
             data_transfer += @elapsed CUDA.@sync begin
@@ -1869,8 +1873,8 @@ function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
                 # the lower bounds are not overwritten, so we can still move them all to the CPU
                 if t.node_len <= 0.3*t.max_parallel_nodes
                     data_transfer += @elapsed CUDA.@sync begin
-                        @views copyto!(t.lower_bound_storage[1:t.node_len,:], Array(view(t.LP_objectives, 1:t.node_len, :)))
-                        @views copyto!(t.CPU_LP_solutions[1:t.node_len], Array(view(t.LP_solutions, 1:t.node_len)))
+                        @views copyto!(t.lower_bound_storage[1:t.node_len], Array(view(t.LP_objectives, 1:t.node_len)))
+                        @views copyto!(t.CPU_LP_solutions[1:t.node_len,:], Array(view(t.LP_solutions, 1:t.node_len, :)))
                     end
                 else
                     data_transfer += @elapsed CUDA.@sync begin
@@ -1939,8 +1943,8 @@ function lower_problem_gpu!(t::KelleyMethod, m::EAGO.GlobalOptimizer)
             # Copy objectives and solutions to the GPU
             if t.node_len <= 0.3*t.max_parallel_nodes
                 data_transfer += @elapsed CUDA.@sync begin
-                    @views copyto!(t.lower_bound_storage[1:t.node_len,:], Array(view(t.LP_objectives, 1:t.node_len, :)))
-                    @views copyto!(t.CPU_LP_solutions[1:t.node_len], Array(view(t.LP_solutions, 1:t.node_len)))
+                    @views copyto!(t.lower_bound_storage[1:t.node_len], Array(view(t.LP_objectives, 1:t.node_len)))
+                    @views copyto!(t.CPU_LP_solutions[1:t.node_len,:], Array(view(t.LP_solutions, 1:t.node_len, :)))
                 end
             else
                 data_transfer += @elapsed CUDA.@sync begin
