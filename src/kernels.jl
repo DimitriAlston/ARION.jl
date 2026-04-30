@@ -51,7 +51,8 @@ function rescale_linearization_points_kernel(input_storage, eval_points, result_
         end
 
         # If LBD > UBD, we have a less trivial case. This can happen if, e.g.,
-        #  
+        # minima are found in a line/band that is diagonal relative to a variable
+        # of interest
         if LBD > UBD
             temp = UBD
             UBD = LBD
@@ -74,7 +75,11 @@ function rescale_linearization_points_kernel(input_storage, eval_points, result_
         point = Int32(1)
         while point <= points_per_LP
             curr = (idx - Int32(1))*points_per_LP + point
-            new_pt = ((input_storage[curr, Int32(1)] - old_lbd)/(old_ubd - old_lbd))*(UBD - LBD) + LBD
+            if old_lbd == old_ubd
+                new_pt = old_lbd
+            else
+                new_pt = ((input_storage[curr, Int32(1)] - old_lbd)/(old_ubd - old_lbd))*(UBD - LBD) + LBD
+            end
             eval_points[curr, var] = new_pt
             input_storage[curr, Int32(1)] = new_pt
             point += Int32(1)
@@ -100,7 +105,11 @@ function scale_back_linearization_points_kernel(input_storage, eval_points, curr
         UBD = input_storage[(idx - Int32(1))*points_per_LP + point, Int32(3)]
         while point <= points_per_LP
             curr = (idx - Int32(1))*points_per_LP + point
-            new_pt = ((input_storage[curr, Int32(1)] - old_lbd)/(old_ubd - old_lbd))*(UBD - LBD) + LBD
+            if old_lbd == old_ubd
+                new_pt = old_lbd
+            else
+                new_pt = ((input_storage[curr, Int32(1)] - old_lbd)/(old_ubd - old_lbd))*(UBD - LBD) + LBD
+            end
             eval_points[curr, var] = new_pt
             input_storage[curr, Int32(1)] = new_pt
             point += Int32(1)

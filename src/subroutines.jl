@@ -149,8 +149,8 @@ function solve_gpu!(ext::T, m::EAGO.GlobalOptimizer) where T <: ExtendGPU
                 this_time = @elapsed if m._preprocess_feasibility
                     count += 1
                     ext.node_storage[count] = m._current_node
-                    ext.all_lvbs[count,:] .= @view ext.node_storage[count].lower_variable_bounds[1:end-m._epigraph_occurred]
-                    ext.all_uvbs[count,:] .= @view ext.node_storage[count].upper_variable_bounds[1:end-m._epigraph_occurred]
+                    ext.all_lvbs[count,:] .= [_lower_bound(EAGO.FullVar(), m, i) for i = 1:EAGO._variable_num(EAGO.FullVar(), m)-m._epigraph_occurred]
+                    ext.all_uvbs[count,:] .= [_upper_bound(EAGO.FullVar(), m, i) for i = 1:EAGO._variable_num(EAGO.FullVar(), m)-m._epigraph_occurred]
                     if count == ext.max_parallel_nodes
                         break
                     end
@@ -345,6 +345,7 @@ function make_current_node!(t::T, m::EAGO.GlobalOptimizer) where T <: ExtendGPU
     new_lower = t.lower_bound_storage[t.node_len]
     m._lower_objective_value = max(prev.lower_bound, new_lower)
     m._lower_solution[1:end-m._epigraph_occurred] .= t.CPU_LP_solutions[t.node_len,:]
+    m._lower_solution[end] = m._lower_objective_value
     t.node_len -= 1
     m._current_node = NodeBB(prev.lower_variable_bounds, prev.upper_variable_bounds,
                              prev.is_integer, prev.continuous, new_lower, prev.upper_bound,
