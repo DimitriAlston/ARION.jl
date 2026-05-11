@@ -348,7 +348,11 @@ function make_current_node!(t::T, m::EAGO.GlobalOptimizer) where T <: ExtendGPU
     prev = copy(t.node_storage[t.node_len])
     new_lower = t.lower_bound_storage[t.node_len]
     m._lower_objective_value = max(prev.lower_bound, new_lower)
-    m._lower_solution[1:end-m._epigraph_occurred] .= t.CPU_LP_solutions[t.node_len,:]
+    if new_lower == -Inf
+        m._lower_solution[1:end-m._epigraph_occurred] .= (prev.lower_variable_bounds[1:end-m._epigraph_occurred] .+ prev.upper_variable_bounds[1:end-m._epigraph_occurred])./2
+    else
+        m._lower_solution[1:end-m._epigraph_occurred] .= t.CPU_LP_solutions[t.node_len,:]
+    end
     m._lower_solution[end] = m._lower_objective_value
     t.node_len -= 1
     m._current_node = NodeBB(prev.lower_variable_bounds, prev.upper_variable_bounds,
@@ -2027,6 +2031,8 @@ function solve_on_cpu(cpu_solver, lvbs, uvbs, var_count, current_LP_length, acti
             lower_bound_storage[index] = MOI.get(cpu_solver, MOI.ObjectiveValue())
         end
         LP_solutions .= MOI.get.(cpu_solver, MOI.VariablePrimal(), vi)
+    elseif term == MOI.DUAL_INFEASIBLE
+        lower_bound_storage[index] = -Inf
     else
         lower_bound_storage[index] = Inf
     end
