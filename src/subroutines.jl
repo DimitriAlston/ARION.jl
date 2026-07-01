@@ -17,9 +17,6 @@ end
 # Analogous to `global_solve()
 # @ EAGO/src/eago_optimizer/optimize/optimize_nonconvex.jl:373
 function solve_gpu!(ext::T, m::EAGO.GlobalOptimizer) where T <: ExtendGPU
-    # Turn off garbage collection
-    # GC.enable(false)
-
     # Set node count to 1
     m._node_count = 1
 
@@ -127,13 +124,6 @@ function solve_gpu!(ext::T, m::EAGO.GlobalOptimizer) where T <: ExtendGPU
             ########################################################################
             ############################ GPU iteration #############################
             ########################################################################
-            # Garbage collect every gc_freq iterations
-            # if mod(m._iteration_count, EAGO._ext(m).gc_freq)==0
-            #     GC.enable(true)
-            #     GC.gc(false)
-            #     GC.enable(false)
-            # end
-
             # Increment the GPU iteration counter
             gpu_iteration_count += 1
 
@@ -227,46 +217,36 @@ function solve_gpu!(ext::T, m::EAGO.GlobalOptimizer) where T <: ExtendGPU
     EAGO.print_iteration!(m, true)
     EAGO.print_solution!(m)
 
-    # Print extra profiling information
-    println("  Process               |  Time (s)")
-    println("=======================================")
-    println("  EAGO Runtime:         | $(round(m._run_time, digits=6))")
-    println("      Fathoming:            | $(round(sum(ext.timers[18]), digits=6))")
-    println("      Preprocessing:        | $(round(sum(ext.timers[12]), digits=6))")
-    println("      Populating Substack:  | $(round(sum(ext.timers[16]), digits=6))")
-    println("      Lower Problem:        | $(round(sum(ext.timers[9]) + sum(ext.timers[17]), digits=6))")
-    println("          CPU Lower-Bounding:   | $(round(sum(ext.timers[9]), digits=6))")
-    println("          GPU Lower-Bounding:   | $(round(sum(ext.timers[17]), digits=6))")
-    println("              Miscellaneous Setup:  | $(round(sum(ext.timers[2]), digits=6))")
-    println("              Data Transfer:        | $(round(sum(ext.timers[3]), digits=6))")
-    println("              Initial Point Setup:  | $(round(sum(ext.timers[4]), digits=6))")
-    println("              Relaxations:          | $(round(sum(ext.timers[5]), digits=6))")
-    println("              MultiSobol Rescaling: | $(round(sum(ext.timers[6]), digits=6))")
-    println("              Adding Constraints:   | $(round(sum(ext.timers[7]), digits=6))")
-    println("              Running PDLP:         | $(round(sum(ext.timers[8]), digits=6))")
-    println("              Preparing CPU solver: | $(round(sum(ext.timers[10]), digits=6))")
-    println("              Running CPU solver:   | $(round(sum(ext.timers[11]), digits=6))")
-    println("              Timing:               | $(round(sum(ext.timers[9]), digits=6))")
-    println("              Removing invalid constraints:  | $(round(sum(ext.timers[26]), digits=6))")
-    println("      Depopulating Substack:| $(round(sum(ext.timers[19]), digits=6))")
-    println("      Upper Problem:        | $(round(sum(ext.timers[13]), digits=6))")
-    println("      Postprocessing:       | $(round(sum(ext.timers[14]), digits=6))")
-    println("      Branching:            | $(round(sum(ext.timers[15]), digits=6))")
-    println("      Logging:              | $(round(sum(ext.timers[20]), digits=6))")
-    println("=======================================")
-    println("")
-    # println("  Diagnostic          |  Value")
-    # println("=======================================")
-    # println("  Iterations:         | $(m._iteration_count)")
-    # println("      GPU Iterations: | $(gpu_iteration_count)")
-    # println("      CPU Iterations: | $(m._iteration_count - gpu_iteration_count)")
-    # println("  LPs Solved:         | $(sum(ext.LPs_solved))")
-    # println("  Avg LPs / Iteration:| $(round(sum(ext.LPs_solved) / sum(ext.nodes_solved), digits=2))")
-    # println("=======================================")
-
-    # Turn back on garbage collection
-    GC.enable(true)
-    GC.gc()
+    # Print extra profiling information if verbosity is high enough
+    if _verbosity(m) > 1
+        println("  Process               |  Time (s)")
+        println("=======================================")
+        println("  EAGO Runtime:         | $(round(m._run_time, digits=6))")
+        println("      Fathoming:            | $(round(sum(ext.timers[18]), digits=6))")
+        println("      Preprocessing:        | $(round(sum(ext.timers[12]), digits=6))")
+        println("      Populating Substack:  | $(round(sum(ext.timers[16]), digits=6))")
+        println("      Lower Problem:        | $(round(sum(ext.timers[9]) + sum(ext.timers[17]), digits=6))")
+        println("          CPU Lower-Bounding:   | $(round(sum(ext.timers[9]), digits=6))")
+        println("          GPU Lower-Bounding:   | $(round(sum(ext.timers[17]), digits=6))")
+        println("              Miscellaneous Setup:  | $(round(sum(ext.timers[2]), digits=6))")
+        println("              Data Transfer:        | $(round(sum(ext.timers[3]), digits=6))")
+        println("              Initial Point Setup:  | $(round(sum(ext.timers[4]), digits=6))")
+        println("              Relaxations:          | $(round(sum(ext.timers[5]), digits=6))")
+        println("              MultiSobol Rescaling: | $(round(sum(ext.timers[6]), digits=6))")
+        println("              Adding Constraints:   | $(round(sum(ext.timers[7]), digits=6))")
+        println("              Running PDLP:         | $(round(sum(ext.timers[8]), digits=6))")
+        println("              Preparing CPU solver: | $(round(sum(ext.timers[10]), digits=6))")
+        println("              Running CPU solver:   | $(round(sum(ext.timers[11]), digits=6))")
+        println("              Timing:               | $(round(sum(ext.timers[9]), digits=6))")
+        println("              Removing invalid constraints:  | $(round(sum(ext.timers[26]), digits=6))")
+        println("      Depopulating Substack:| $(round(sum(ext.timers[19]), digits=6))")
+        println("      Upper Problem:        | $(round(sum(ext.timers[13]), digits=6))")
+        println("      Postprocessing:       | $(round(sum(ext.timers[14]), digits=6))")
+        println("      Branching:            | $(round(sum(ext.timers[15]), digits=6))")
+        println("      Logging:              | $(round(sum(ext.timers[20]), digits=6))")
+        println("=======================================")
+        println("")
+    end
 end
 solve_gpu!(m::EAGO.GlobalOptimizer) = solve_gpu!(EAGO._ext(m), m)
 
